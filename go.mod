@@ -1,4 +1,4 @@
-module sparkle-service
+module outclash-service
 
 go 1.24.2
 

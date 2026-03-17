@@ -3,8 +3,8 @@ package cmd
 import (
 	"os"
 	"path/filepath"
-	"sparkle-service/log"
-	"sparkle-service/route"
+	"outclash-service/log"
+	"outclash-service/route"
 
 	"github.com/kardianos/service"
 	"github.com/spf13/cobra"
@@ -35,9 +35,9 @@ func createServiceConfig(executablePath string) *service.Config {
 	options["RunAtLoadOnMac"] = true
 
 	return &service.Config{
-		Name:         "SparkleService",
-		DisplayName:  "Sparkle Service",
-		Description:  "Sparkle 提权服务",
+		Name:         "OutclashService",
+		DisplayName:  "Outclash Service",
+		Description:  "Outclash 提权服务",
 		Executable:   executablePath,
 		Arguments:    []string{"service", "run"},
 		Dependencies: depends,
@@ -49,7 +49,7 @@ func createServiceConfig(executablePath string) *service.Config {
 var sysvScript = `#!/bin/sh /etc/rc.common
 DESCRIPTION="{{.Description}}"
 cmd="{{.Path}}"
-name="SparkleService"
+name="OutclashService"
 pid_file="/var/run/$name.pid"
 
 start() {
@@ -108,7 +108,7 @@ func (p *Program) Stop(s service.Service) error {
 
 var serviceInstallCmd = &cobra.Command{
 	Use:   "install",
-	Short: "安装 Sparkle 服务",
+	Short: "安装 Outclash 服务",
 	Run: func(cmd *cobra.Command, args []string) {
 		listenAddr := listen
 		if listenAddr == "" {
@@ -138,7 +138,7 @@ var serviceInstallCmd = &cobra.Command{
 
 var serviceUninstallCmd = &cobra.Command{
 	Use:   "uninstall",
-	Short: "卸载 Sparkle 服务",
+	Short: "卸载 Outclash 服务",
 	Run: func(cmd *cobra.Command, args []string) {
 		svcConfig := createServiceConfig("")
 
@@ -167,7 +167,7 @@ var serviceUninstallCmd = &cobra.Command{
 
 var serviceStartCmd = &cobra.Command{
 	Use:   "start",
-	Short: "启动 Sparkle 服务",
+	Short: "启动 Outclash 服务",
 	Run: func(cmd *cobra.Command, args []string) {
 		svcConfig := createServiceConfig("")
 
@@ -192,7 +192,7 @@ var serviceStartCmd = &cobra.Command{
 
 var serviceStopCmd = &cobra.Command{
 	Use:   "stop",
-	Short: "停止 Sparkle 服务",
+	Short: "停止 Outclash 服务",
 	Run: func(cmd *cobra.Command, args []string) {
 		svcConfig := createServiceConfig("")
 
@@ -217,7 +217,7 @@ var serviceStopCmd = &cobra.Command{
 
 var serviceRestartCmd = &cobra.Command{
 	Use:   "restart",
-	Short: "重启 Sparkle 服务",
+	Short: "重启 Outclash 服务",
 	Run: func(cmd *cobra.Command, args []string) {
 		svcConfig := createServiceConfig("")
 
@@ -242,7 +242,7 @@ var serviceRestartCmd = &cobra.Command{
 
 var serviceStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "查看 Sparkle 服务状态",
+	Short: "查看 Outclash 服务状态",
 	Run: func(cmd *cobra.Command, args []string) {
 		svcConfig := createServiceConfig("")
 
@@ -278,7 +278,7 @@ var serviceStatusCmd = &cobra.Command{
 
 var serviceRunCmd = &cobra.Command{
 	Use:   "run",
-	Short: "运行 Sparkle 服务",
+	Short: "运行 Outclash 服务",
 	Run: func(cmd *cobra.Command, args []string) {
 		svcConfig := createServiceConfig("")
 
@@ -300,7 +300,7 @@ var serviceRunCmd = &cobra.Command{
 
 var serviceCmd = &cobra.Command{
 	Use:   "service",
-	Short: "管理 Sparkle 服务",
+	Short: "管理 Outclash 服务",
 }
 
 var serviceInitCmd = &cobra.Command{
@@ -313,7 +313,7 @@ var serviceInitCmd = &cobra.Command{
 			return
 		}
 		userDataDir := route.GetConfigDir()
-		keyDir := filepath.Join(userDataDir, "sparkle", "keys")
+		keyDir := filepath.Join(userDataDir, "outclash", "keys")
 
 		_ = route.InitKeyManager(keyDir)
 
@@ -348,7 +348,7 @@ var serviceInitCmd = &cobra.Command{
 			log.Println("正在重启服务...")
 			if err := s.Restart(); err != nil {
 				log.Println("重启服务失败：", err)
-				log.Println("请手动执行 'sparkle-service service restart' 命令")
+				log.Println("请手动执行 'outclash-service service restart' 命令")
 				return
 			}
 			log.Println("服务已成功重启")
