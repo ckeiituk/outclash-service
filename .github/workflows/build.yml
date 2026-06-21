@@ -9,6 +9,7 @@ on:
     paths-ignore:
       - "docs/**"
       - "README.md"
+      - "OUTCLASH.md"
       - ".github/ISSUE_TEMPLATE/**"
     branches:
       - main
@@ -55,6 +56,10 @@ jobs:
         go-download-base-url: 'https://github.com/MetaCubeX/loongarch64-golang/releases/download/1.26.0'
         go-version: '1.26.0'
 
+    # OutClash overlay: source is pristine upstream; rebrand sparkle -> outclash at build time.
+    - name: Rebrand (sparkle -> outclash)
+      run: bash scripts/rebrand.sh
+
     - name: Build
       env:
         GOOS: ${{matrix.jobs.goos}}
@@ -64,9 +69,9 @@ jobs:
       run: |
         go env
         if [ "${{ matrix.jobs.goos }}" == "windows" ]; then
-          go build -ldflags "-extldflags --static -w -s -buildid=" -o sparkle-service-${{matrix.jobs.goos}}-${{matrix.jobs.output}}.exe
+          go build -ldflags "-extldflags --static -w -s -buildid=" -o outclash-service-${{matrix.jobs.goos}}-${{matrix.jobs.output}}.exe
         else
-          go build -ldflags "-extldflags --static -w -s -buildid=" -o sparkle-service-${{matrix.jobs.goos}}-${{matrix.jobs.output}}
+          go build -ldflags "-extldflags --static -w -s -buildid=" -o outclash-service-${{matrix.jobs.goos}}-${{matrix.jobs.output}}
         fi
 
     - name: Archive production artifacts
@@ -74,7 +79,7 @@ jobs:
       with:
         name: "${{ matrix.jobs.goos }}-${{ matrix.jobs.output }}"
         path: |
-          sparkle-service-${{ matrix.jobs.goos }}-${{ matrix.jobs.output }}*
+          outclash-service-${{ matrix.jobs.goos }}-${{ matrix.jobs.output }}*
 
   pre-release:
     needs: [build]

@@ -1,0 +1,6 @@
+# OutClash overlay files always win on `git merge upstream/main`.
+# Requires `git config merge.ours.driver true` (set in sync-upstream.yml).
+.github/**       merge=ours
+scripts/**       merge=ours
+.gitattributes   merge=ours
+OUTCLASH.md      merge=ours

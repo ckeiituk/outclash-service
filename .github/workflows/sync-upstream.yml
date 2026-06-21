@@ -1,0 +1,52 @@
+name: Sync Upstream
+# Keeps this fork tracking UruhaLushia/sparkle-service.
+# Source is kept pristine-upstream; OutClash branding is applied at build time by
+# scripts/rebrand.sh, so merges never conflict on branding. Our CI + scripts are
+# protected by `.gitattributes` (merge=ours). On a clean merge we push to main, which
+# triggers build.yml -> rebuilds the rolling `pre-release` that the app's prepare.mjs pulls.
+on:
+  schedule:
+    - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config merge.ours.driver true
+
+      - name: Add upstream and fetch
+        run: |
+          git remote add upstream https://github.com/UruhaLushia/sparkle-service.git \
+            || git remote set-url upstream https://github.com/UruhaLushia/sparkle-service.git
+          git fetch upstream
+
+      - name: Merge upstream/main
+        id: merge
+        run: |
+          set +e
+          git merge --no-edit upstream/main
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Push (clean merge)
+        if: steps.merge.outputs.code == '0'
+        run: git push origin HEAD:main
+
+      - name: Fail on conflict (manual merge needed)
+        if: steps.merge.outputs.code != '0'
+        run: |
+          git merge --abort || true
+          echo "::error::Upstream merge conflict. Resolve manually, keeping .github/** and scripts/** as ours (build-time rebrand re-applies branding)."
+          exit 1
