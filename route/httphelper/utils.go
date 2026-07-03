@@ -120,10 +120,17 @@ func shouldLogRequest(r *http.Request) bool {
 	if r.Method != http.MethodGet && r.Method != http.MethodPost {
 		return false
 	}
+	if isCoreControllerRequest(r.URL.Path) {
+		return false
+	}
 	if r.Header.Get("Upgrade") != "" || headerContainsToken(r.Header, "Connection", "upgrade") {
 		return false
 	}
 	return !headerContainsToken(r.Header, "Accept", "text/event-stream")
+}
+
+func isCoreControllerRequest(path string) bool {
+	return path == "/core/controller" || strings.HasPrefix(path, "/core/controller/")
 }
 
 func SendJSONWithStatus(w http.ResponseWriter, statusCode int, status string, message string) {
