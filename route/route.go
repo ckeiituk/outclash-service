@@ -16,6 +16,7 @@ import (
 func router() *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(render.SetContentType(render.ContentTypeJSON))
+	r.Use(httphelper.RequestLogger)
 
 	r.Group(func(r chi.Router) {
 		r.Get("/ping", func(w http.ResponseWriter, r *http.Request) {

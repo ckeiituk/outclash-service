@@ -16,8 +16,6 @@ var serviceController appservice.Controller
 func Router() http.Handler {
 	r := chi.NewRouter()
 
-	r.Use(httphelper.RequestLogger)
-
 	r.Post("/stop", serviceStop)
 	r.Post("/restart", serviceRestart)
 

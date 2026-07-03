@@ -24,8 +24,6 @@ func Router() http.Handler {
 
 	r := chi.NewRouter()
 
-	r.Use(httphelper.RequestLogger)
-
 	r.Get("/", coreStatus)
 	r.Get("/events", coreEvents)
 	r.HandleFunc("/controller", coreControllerProxy)
