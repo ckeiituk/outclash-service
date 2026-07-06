@@ -5,7 +5,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
+	"time"
 
+	"github.com/UruhaLushia/sparkle-service/log"
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/render"
 )
 
@@ -70,8 +75,62 @@ func DecodeOptionalRequest(r *http.Request, v any) (bool, error) {
 
 func RequestLogger(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
+		if !shouldLogRequest(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		startedAt := time.Now()
+		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		next.ServeHTTP(ww, r)
+
+		if strings.HasPrefix(ww.Header().Get("Content-Type"), "text/event-stream") {
+			return
+		}
+
+		duration := time.Since(startedAt)
+		status := ww.Status()
+		if status == 0 {
+			status = http.StatusOK
+		}
+		fields := []any{
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", status,
+			"bytes", ww.BytesWritten(),
+			"duration", duration.String(),
+			"duration_ms", float64(duration.Nanoseconds()) / float64(time.Millisecond),
+		}
+		if routePattern := chi.RouteContext(r.Context()).RoutePattern(); routePattern != "" {
+			fields = append(fields, "route", routePattern)
+		}
+
+		switch {
+		case status >= http.StatusInternalServerError:
+			log.S().Errorw("HTTP 请求完成", fields...)
+		case status >= http.StatusBadRequest:
+			log.S().Warnw("HTTP 请求完成", fields...)
+		default:
+			log.S().Infow("HTTP 请求完成", fields...)
+		}
 	})
+}
+
+func shouldLogRequest(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		return false
+	}
+	if isCoreControllerRequest(r.URL.Path) {
+		return false
+	}
+	if r.Header.Get("Upgrade") != "" || headerContainsToken(r.Header, "Connection", "upgrade") {
+		return false
+	}
+	return !headerContainsToken(r.Header, "Accept", "text/event-stream")
+}
+
+func isCoreControllerRequest(path string) bool {
+	return path == "/core/controller" || strings.HasPrefix(path, "/core/controller/")
 }
 
 func SendJSONWithStatus(w http.ResponseWriter, statusCode int, status string, message string) {
