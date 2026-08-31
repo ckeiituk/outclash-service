@@ -6,15 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"maps"
-	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync/atomic"
-	"time"
 
 	"github.com/UruhaLushia/sparkle-service/core/controller"
 	"github.com/UruhaLushia/sparkle-service/core/security"
@@ -22,6 +19,7 @@ import (
 
 type LaunchProfile struct {
 	CorePath         string            `json:"core_path,omitempty"`
+	Mode             string            `json:"mode,omitempty"`
 	Args             []string          `json:"args,omitempty"`
 	SafePaths        []string          `json:"safe_paths,omitempty"`
 	Env              map[string]string `json:"env,omitempty"`
@@ -32,10 +30,17 @@ type LaunchProfile struct {
 }
 
 type LaunchProfilePatch struct {
+	Mode             *string `json:"mode,omitempty"`
 	LogPath          *string `json:"log_path,omitempty"`
 	SaveLogs         *bool   `json:"save_logs,omitempty"`
 	MaxLogFileSizeMB *int    `json:"max_log_file_size_mb,omitempty"`
 }
+
+const (
+	CoreRunModeAuto    = "auto"
+	CoreRunModeSandbox = "sandbox"
+	CoreRunModeDirect  = "direct"
+)
 
 type launchSession struct {
 	sourcePath     string
@@ -71,7 +76,7 @@ func LoadLaunchProfile() (LaunchProfile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return LaunchProfile{}, nil
+			return LaunchProfile{Mode: CoreRunModeAuto}, nil
 		}
 		return LaunchProfile{}, fmt.Errorf("读取核心启动配置失败：%w", err)
 	}
@@ -120,12 +125,14 @@ func PatchLaunchProfile(patch LaunchProfilePatch) (LaunchProfile, error) {
 		return LaunchProfile{}, err
 	}
 
+	if patch.Mode != nil {
+		profile.Mode = *patch.Mode
+	}
 	if patch.LogPath != nil {
 		profile.LogPath = *patch.LogPath
 	}
 	if patch.SaveLogs != nil {
-		saveLogs := *patch.SaveLogs
-		profile.SaveLogs = &saveLogs
+		profile.SaveLogs = new(*patch.SaveLogs)
 	}
 	if patch.MaxLogFileSizeMB != nil {
 		profile.MaxLogFileSizeMB = *patch.MaxLogFileSizeMB
@@ -184,7 +191,7 @@ func (cm *CoreManager) prepareLaunchSession(profileOverride *LaunchProfile, opti
 		executablePath: corePath,
 		workingDir:     workingDir,
 		args:           args,
-		env:            buildLaunchEnv(profile),
+		env:            buildLaunchEnv(profile, hook.env),
 		hookUpFile:     hook.upFile,
 		waitReady:      hook.wait,
 		readyNotify:    hook.notifications,
@@ -215,13 +222,21 @@ func resolveLaunchProfile(profileOverride *LaunchProfile) (LaunchProfile, error)
 func normalizeLaunchProfile(profile LaunchProfile) (LaunchProfile, error) {
 	normalized := LaunchProfile{
 		CorePath:         strings.TrimSpace(profile.CorePath),
+		Mode:             strings.ToLower(strings.TrimSpace(profile.Mode)),
 		Priority:         strings.TrimSpace(profile.Priority),
 		LogPath:          strings.TrimSpace(profile.LogPath),
 		MaxLogFileSizeMB: profile.MaxLogFileSizeMB,
 	}
+	if normalized.Mode == "" {
+		normalized.Mode = CoreRunModeAuto
+	}
+	switch normalized.Mode {
+	case CoreRunModeAuto, CoreRunModeSandbox, CoreRunModeDirect:
+	default:
+		return LaunchProfile{}, fmt.Errorf("mode 仅支持 auto、sandbox 或 direct")
+	}
 	if profile.SaveLogs != nil {
-		saveLogs := *profile.SaveLogs
-		normalized.SaveLogs = &saveLogs
+		normalized.SaveLogs = new(*profile.SaveLogs)
 	}
 
 	if len(profile.Args) > 0 {
@@ -394,6 +409,7 @@ func coreArgName(arg string) (string, bool) {
 
 func isZeroLaunchProfile(profile LaunchProfile) bool {
 	return profile.CorePath == "" &&
+		(profile.Mode == "" || profile.Mode == CoreRunModeAuto) &&
 		profile.Priority == "" &&
 		profile.LogPath == "" &&
 		profile.SaveLogs == nil &&
@@ -452,6 +468,7 @@ type coreStartupHook struct {
 	upFile          string
 	postUpCommand   string
 	postDownCommand string
+	env             map[string]string
 	wait            func(context.Context) error
 	notifications   <-chan struct{}
 	cleanup         func()
@@ -466,7 +483,7 @@ func createCoreStartupHook() (*coreStartupHook, error) {
 	return createNativeStartupHook(token)
 }
 
-func newCoreStartupHook(listener net.Listener, token string, upFile string, postUpCommand string, postDownCommand string, cleanup func()) *coreStartupHook {
+func newCoreStartupHook(waitNotification func() (bool, error), upFile string, postUpCommand string, postDownCommand string, env map[string]string, cleanup func()) *coreStartupHook {
 	firstReady := make(chan error, 1)
 	notifications := make(chan struct{}, 8)
 	var firstDelivered atomic.Bool
@@ -481,15 +498,11 @@ func newCoreStartupHook(listener net.Listener, token string, upFile string, post
 
 	go func() {
 		for {
-			conn, err := listener.Accept()
+			fatal, err := waitNotification()
 			if err != nil {
 				deliverFirst(err)
-				return
-			}
-
-			if err := readStartupNotification(conn, token); err != nil {
-				if deliverFirst(err) {
-					continue
+				if fatal {
+					return
 				}
 				continue
 			}
@@ -508,6 +521,7 @@ func newCoreStartupHook(listener net.Listener, token string, upFile string, post
 		upFile:          upFile,
 		postUpCommand:   postUpCommand,
 		postDownCommand: postDownCommand,
+		env:             env,
 		wait: func(ctx context.Context) error {
 			select {
 			case err := <-firstReady:
@@ -517,27 +531,8 @@ func newCoreStartupHook(listener net.Listener, token string, upFile string, post
 			}
 		},
 		notifications: notifications,
-		cleanup: func() {
-			_ = listener.Close()
-			if cleanup != nil {
-				cleanup()
-			}
-		},
+		cleanup:       cleanup,
 	}
-}
-
-func readStartupNotification(conn net.Conn, token string) error {
-	defer conn.Close()
-
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-	data, err := io.ReadAll(io.LimitReader(conn, int64(len(token)+16)))
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(string(data)) != token {
-		return fmt.Errorf("核心启动通知 token 不匹配")
-	}
-	return nil
 }
 
 func randomToken(size int) (string, error) {
@@ -555,7 +550,7 @@ func noopShellCommand() string {
 	return "true"
 }
 
-func buildLaunchEnv(profile LaunchProfile) []string {
+func buildLaunchEnv(profile LaunchProfile, managed map[string]string) []string {
 	envMap := make(map[string]string)
 
 	maps.Copy(envMap, profile.Env)
@@ -573,6 +568,7 @@ func buildLaunchEnv(profile LaunchProfile) []string {
 	envMap["CLASH_OVERRIDE_SECRET"] = ""
 	envMap["CLASH_POST_UP"] = ""
 	envMap["CLASH_POST_DOWN"] = ""
+	maps.Copy(envMap, managed)
 
 	env := make([]string, 0, len(envMap))
 	for key, value := range envMap {
