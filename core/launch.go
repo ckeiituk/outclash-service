@@ -7,13 +7,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math/bits"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 
 	"github.com/UruhaLushia/sparkle-service/core/controller"
+	"github.com/UruhaLushia/sparkle-service/core/process"
 	"github.com/UruhaLushia/sparkle-service/core/security"
 )
 
@@ -23,13 +26,15 @@ type LaunchProfile struct {
 	Args             []string          `json:"args,omitempty"`
 	SafePaths        []string          `json:"safe_paths,omitempty"`
 	Env              map[string]string `json:"env,omitempty"`
-	Priority         string            `json:"mihomo_cpu_priority,omitempty"`
+	Priority         string            `json:"cpu_priority,omitempty"`
+	CPUAffinity      []int             `json:"cpu_affinity,omitempty"`
 	LogPath          string            `json:"log_path,omitempty"`
 	SaveLogs         *bool             `json:"save_logs,omitempty"`
 	MaxLogFileSizeMB int               `json:"max_log_file_size_mb,omitempty"`
 }
 
 type LaunchProfilePatch struct {
+	CPUAffinity      *[]int  `json:"cpu_affinity,omitempty"`
 	Mode             *string `json:"mode,omitempty"`
 	LogPath          *string `json:"log_path,omitempty"`
 	SaveLogs         *bool   `json:"save_logs,omitempty"`
@@ -43,24 +48,25 @@ const (
 )
 
 type launchSession struct {
-	sourcePath     string
-	executablePath string
-	workingDir     string
-	args           []string
-	env            []string
-	hookUpFile     string
-	waitReady      func(context.Context) error
-	readyNotify    <-chan struct{}
-	cpuPriority    string
-	logPath        string
-	saveLogs       bool
-	maxLogBytes    int64
-	logWriter      *boundedLogWriter
-	fileAccess     fileAccess
-	controllerNet  string
-	controllerAddr string
-	profile        LaunchProfile
-	cleanup        func()
+	sourcePath         string
+	executablePath     string
+	workingDir         string
+	args               []string
+	env                []string
+	hookUpFile         string
+	waitReady          func(context.Context) error
+	readyNotify        <-chan struct{}
+	cpuPriority        string
+	logPath            string
+	saveLogs           bool
+	maxLogBytes        int64
+	logWriter          *boundedLogWriter
+	fileAccess         fileAccess
+	controllerNet      string
+	controllerAddr     string
+	defaultCPUAffinity []int
+	profile            LaunchProfile
+	cleanup            func()
 }
 
 func (s *launchSession) cleanupNow() {
@@ -103,16 +109,12 @@ func SaveLaunchProfile(profile LaunchProfile) error {
 		return nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("创建核心配置目录失败：%w", err)
-	}
-
 	data, err := json.MarshalIndent(normalized, "", "  ")
 	if err != nil {
 		return fmt.Errorf("序列化核心启动配置失败：%w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := atomicWriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("保存核心启动配置失败：%w", err)
 	}
 
@@ -127,6 +129,9 @@ func PatchLaunchProfile(patch LaunchProfilePatch) (LaunchProfile, error) {
 
 	if patch.Mode != nil {
 		profile.Mode = *patch.Mode
+	}
+	if patch.CPUAffinity != nil {
+		profile.CPUAffinity = slices.Clone(*patch.CPUAffinity)
 	}
 	if patch.LogPath != nil {
 		profile.LogPath = *patch.LogPath
@@ -176,6 +181,14 @@ func (cm *CoreManager) prepareLaunchSession(profileOverride *LaunchProfile, opti
 		return nil, err
 	}
 	args = append([]string{"-post-up", hook.postUpCommand, "-post-down", hook.postDownCommand}, args...)
+	defaultCPUAffinity, err := process.CurrentCPUAffinity()
+	if err != nil {
+		hook.cleanup()
+		if controllerCleanup != nil {
+			controllerCleanup()
+		}
+		return nil, fmt.Errorf("读取核心默认 CPU 集合失败：%w", err)
+	}
 
 	workingDir, err := resolveLaunchWorkingDir(corePath, args)
 	if err != nil {
@@ -187,22 +200,23 @@ func (cm *CoreManager) prepareLaunchSession(profileOverride *LaunchProfile, opti
 	}
 
 	return &launchSession{
-		sourcePath:     corePath,
-		executablePath: corePath,
-		workingDir:     workingDir,
-		args:           args,
-		env:            buildLaunchEnv(profile, hook.env),
-		hookUpFile:     hook.upFile,
-		waitReady:      hook.wait,
-		readyNotify:    hook.notifications,
-		cpuPriority:    profile.Priority,
-		logPath:        profile.LogPath,
-		saveLogs:       saveLogs,
-		maxLogBytes:    maxLogFileSizeBytes(profile.MaxLogFileSizeMB),
-		fileAccess:     options.fileAccess,
-		controllerNet:  controllerNet,
-		controllerAddr: controllerAddr,
-		profile:        profile,
+		sourcePath:         corePath,
+		executablePath:     corePath,
+		workingDir:         workingDir,
+		args:               args,
+		env:                buildLaunchEnv(profile, hook.env),
+		hookUpFile:         hook.upFile,
+		waitReady:          hook.wait,
+		readyNotify:        hook.notifications,
+		cpuPriority:        profile.Priority,
+		logPath:            profile.LogPath,
+		saveLogs:           saveLogs,
+		maxLogBytes:        maxLogFileSizeBytes(profile.MaxLogFileSizeMB),
+		fileAccess:         options.fileAccess,
+		controllerNet:      controllerNet,
+		controllerAddr:     controllerAddr,
+		defaultCPUAffinity: defaultCPUAffinity,
+		profile:            profile,
 		cleanup: func() {
 			if controllerCleanup != nil {
 				controllerCleanup()
@@ -237,6 +251,20 @@ func normalizeLaunchProfile(profile LaunchProfile) (LaunchProfile, error) {
 	}
 	if profile.SaveLogs != nil {
 		normalized.SaveLogs = new(*profile.SaveLogs)
+	}
+	if (runtime.GOOS == "linux" || runtime.GOOS == "windows" || runtime.GOOS == "darwin") && len(profile.CPUAffinity) > 0 {
+		normalized.CPUAffinity = slices.Clone(profile.CPUAffinity)
+		for _, cpu := range normalized.CPUAffinity {
+			maxCPU := 1024
+			if runtime.GOOS == "windows" {
+				maxCPU = bits.UintSize
+			}
+			if cpu < 0 || cpu >= maxCPU {
+				return LaunchProfile{}, fmt.Errorf("cpu_affinity 中的 CPU 编号必须在 0 到 %d 之间：%d", maxCPU-1, cpu)
+			}
+		}
+		slices.Sort(normalized.CPUAffinity)
+		normalized.CPUAffinity = slices.Compact(normalized.CPUAffinity)
 	}
 
 	if len(profile.Args) > 0 {
@@ -411,6 +439,7 @@ func isZeroLaunchProfile(profile LaunchProfile) bool {
 	return profile.CorePath == "" &&
 		(profile.Mode == "" || profile.Mode == CoreRunModeAuto) &&
 		profile.Priority == "" &&
+		len(profile.CPUAffinity) == 0 &&
 		profile.LogPath == "" &&
 		profile.SaveLogs == nil &&
 		profile.MaxLogFileSizeMB == 0 &&

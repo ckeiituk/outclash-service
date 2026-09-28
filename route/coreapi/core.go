@@ -52,6 +52,22 @@ func Stop() error {
 	return cm.StopCore()
 }
 
+func RestoreDesiredState() error {
+	if !isInit.Load() || cm == nil {
+		cm = corepkg.NewCoreManager(corepkg.WithTrafficMonitorPipeSDDL(trafficMonitorPipeSDDL()))
+		isInit.Store(true)
+	}
+	return cm.RestoreDesiredState()
+}
+
+func ReconcileRuntimeState() error {
+	if !isInit.Load() || cm == nil {
+		cm = corepkg.NewCoreManager(corepkg.WithTrafficMonitorPipeSDDL(trafficMonitorPipeSDDL()))
+		isInit.Store(true)
+	}
+	return cm.ReconcileRuntimeState()
+}
+
 func coreStatus(w http.ResponseWriter, r *http.Request) {
 	status, err := cm.GetProcessInfo()
 	if err != nil {
@@ -86,7 +102,10 @@ func coreSaveProfile(w http.ResponseWriter, r *http.Request) {
 		httphelper.SendError(w, httphelper.BadRequest(err.Error()))
 		return
 	}
-	cm.ApplyLaunchProfile(normalized, coreLaunchOptions(r)...)
+	if err := cm.ApplyLaunchProfile(normalized, coreLaunchOptions(r)...); err != nil {
+		httphelper.SendError(w, err)
+		return
+	}
 
 	httphelper.SendJSON(w, "success", "核心启动配置已更新")
 }
@@ -103,7 +122,10 @@ func corePatchProfile(w http.ResponseWriter, r *http.Request) {
 		httphelper.SendError(w, httphelper.BadRequest(err.Error()))
 		return
 	}
-	cm.ApplyLaunchProfile(profile, coreLaunchOptions(r)...)
+	if err := cm.ApplyLaunchProfile(profile, coreLaunchOptions(r)...); err != nil {
+		httphelper.SendError(w, err)
+		return
+	}
 
 	httphelper.SendJSON(w, "success", "核心启动配置已更新")
 }

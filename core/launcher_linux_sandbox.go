@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/UruhaLushia/sparkle-service/core/process"
 	"github.com/UruhaLushia/sparkle-service/core/sandbox"
 )
 
@@ -29,6 +30,7 @@ func (linuxSandboxLauncher) Command(launch *launchSession) (*coreCommand, error)
 		Args:           launch.args,
 		Env:            launch.env,
 		WorkingDir:     launch.workingDir,
+		Sandbox:        true,
 		ReadOnlyPaths:  []string{serviceExecutable},
 		WritablePaths:  launch.profile.SafePaths,
 		WritableDirs:   writableDirs,
@@ -36,13 +38,22 @@ func (linuxSandboxLauncher) Command(launch *launchSession) (*coreCommand, error)
 	if err != nil {
 		return nil, err
 	}
+	return linuxReexecCoreCommand(sandboxCommand, launch), nil
+}
+
+func linuxReexecCoreCommand(sandboxCommand *sandbox.Command, launch *launchSession) *coreCommand {
 	command := newCoreCommand(sandboxCommand.Cmd, func() {
 		if err := sandboxCommand.Cleanup(); err != nil {
 			log.Printf("清理核心沙盒失败：%v", err)
 		}
 	})
-	command.afterStart = sandboxCommand.AwaitExec
-	return command, nil
+	command.afterStart = func() error {
+		if err := sandboxCommand.AwaitExec(); err != nil {
+			return err
+		}
+		return process.SetCPUAffinity(int32(command.cmd.Process.Pid), launch.profile.CPUAffinity, launch.defaultCPUAffinity)
+	}
+	return command
 }
 
 func writableDirsFromCoreArgs(args []string) []string {

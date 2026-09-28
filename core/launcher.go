@@ -3,6 +3,8 @@ package core
 import (
 	"fmt"
 	"os/exec"
+
+	"github.com/UruhaLushia/sparkle-service/core/process"
 )
 
 type coreLauncher interface {
@@ -87,6 +89,10 @@ func (directCoreLauncher) Command(launch *launchSession) (*coreCommand, error) {
 	cmd := exec.Command(launch.executablePath, launch.args...)
 	cmd.Env = launch.env
 	cmd.Dir = launch.workingDir
-	configureCommand(cmd)
-	return newCoreCommand(cmd, nil), nil
+	process.ConfigureCommand(cmd)
+	command := newCoreCommand(cmd, nil)
+	command.afterStart = func() error {
+		return process.SetCPUAffinity(int32(cmd.Process.Pid), launch.profile.CPUAffinity, launch.defaultCPUAffinity)
+	}
+	return command, nil
 }

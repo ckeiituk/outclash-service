@@ -132,6 +132,10 @@ GET /ping
 | POST   | `/core/restart`    | 重启核心进程                 |
 | ANY    | `/core/controller` | 透传至核心控制器接口         |
 
+`GET /core/` 返回运行中的核心 PID、内存、CPU 使用率和实际 CPU 绑定范围；`GET /core/profile` 返回配置中的 `cpu_affinity`。
+
+运行中的核心通过 `PATCH /core/profile` 更新 `cpu_affinity` 会立即生效；Linux root 环境优先使用 cgroup v2 cpuset，动态清空会将核心移回启动前的 cgroup。cgroup 不可用时回退到逐线程 syscall，并恢复启动前的 CPU 集合。其他平台使用系统进程 affinity API。
+
 **启动配置（LaunchProfile）字段：**
 
 ```json
@@ -140,12 +144,15 @@ GET /ping
   "args": ["--config", "/etc/mihomo/config.yaml"],
   "safe_paths": ["/etc/mihomo"],
   "env": { "KEY": "value" },
-  "mihomo_cpu_priority": "normal",
+  "cpu_affinity": [2, 3],
+  "cpu_priority": "normal",
   "log_path": "/var/log/sparkle/core.log",
   "save_logs": true,
   "max_log_file_size_mb": 10
 }
 ```
+
+`cpu_affinity` 使用从 0 开始的逻辑 CPU 编号。Windows 和 Linux 核心进程都会应用该绑定；Windows 受系统处理器组和进程亲和性掩码限制，当前支持单组内的 CPU 编号。macOS 没有公开的逻辑 CPU 硬绑定接口，仅报告 CPU 列表并拒绝非空 `cpu_affinity`，避免把软调度分组误报为核心绑定。
 
 ### 系统代理 `/sysproxy`
 
@@ -174,7 +181,10 @@ GET /ping
 
 | 方法   | 路径           | 说明         |
 | ------ | -------------- | ------------ |
+| GET    | `/sys/cpu`     | 获取可用于核心绑定的 CPU 信息 |
 | POST   | `/sys/dns/set` | 设置 DNS     |
+
+`GET /sys/cpu` 返回逻辑 CPU 编号、物理核心信息、型号、可用状态和整数 `core_class`。Windows 返回原始 `EfficiencyClass`；Linux 优先返回非零 `topology/core_type`，否则读取 `cpu_capacity`。名称和分组由前端判断，数值不可跨平台比较；无法读取时返回 0（Windows 的有效等级也可能为 0）。`available: true` 表示 service 当前允许使用该 CPU，可直接用于 `cpu_affinity`；`affinity_supported: false` 表示当前平台只能提供 CPU 列表，无法确认 service 的实际亲和性限制。
 
 **请求体示例：**
 
